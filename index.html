@@ -1,0 +1,468 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Basketball Arcade</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <style>
+    body { margin: 0; overflow: hidden; background-color: #1a1a2e; }
+    #info {
+      position: absolute;
+      top: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #fff;
+      font-family: monospace;
+      font-size: 14px;
+      background: rgba(0,0,0,0.5);
+      padding: 8px 16px;
+      border-radius: 8px;
+      pointer-events: none;
+    }
+    #dis_timer {
+      position: absolute;
+      top: 60px;
+      left: 50%;
+      color: #fff;
+      font-family: monospace;
+      font-size: 10px;
+      font-weight: bold;
+      background: rgba(0,0,0,0.6);
+    }
+  </style>
+</head>
+<body>
+
+<div id="dis_timer">2:00</div>
+
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+    }
+  }
+</script>
+
+<script type="module">
+
+import * as THREE from 'three';
+import { VRButton } from 'three/addons/webxr/VRButton.js';
+import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+const MODEL_PATH = 'Arcade_machine.glb';
+const BUTTON_NAMES = ['Button_Classic', 'Button_levels'];
+
+const DIVIDER = 'Separate';
+const TIMER = 'Timer';
+const SCORE = 'Score';
+
+const LASER_LENGTH = 5;
+const PRESS_DEPTH = 0.01;
+
+const DIVIDER_DROP_AMOUNT = 1.5;
+
+const DIVIDER_SPEED = 0.008;
+
+const GAME_DURATION = 20; // 2 minutes
+
+let camera, scene, renderer, raycaster;
+let controller1, controller2;
+let controllerGrip1, controllerGrip2;
+
+const buttons = [];
+const hovered = [];
+
+let dividerMesh  = null;
+let timerMesh    = null;
+let scoreMesh    = null;
+let gameRunning  = false;
+
+let dividerRestY   = null;  
+let dividerTargetY = null; 
+
+let timerSecondsLeft   = GAME_DURATION;
+let timerLastTimestamp = null;
+let timerRunning       = false;
+
+let timerCanvas  = null;
+let timerCtx     = null;
+let timerTexture = null;
+
+const disTimer = document.getElementById('dis_timer');
+
+init();
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1a2e);
+  scene.fog = new THREE.Fog(0x1a1a2e, 10, 30);
+
+  camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 50);
+  camera.position.set(0, 1.6, 3);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 2));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 3);
+  dirLight.position.set(2, 4, 2);
+  scene.add(dirLight);
+
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(20, 20).rotateX(-Math.PI / 2),
+    new THREE.MeshStandardMaterial({ color: 0x222244, roughness: 1 })
+  );
+  scene.add(floor);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setAnimationLoop(animate);
+  renderer.xr.enabled = true;
+  document.body.appendChild(renderer.domElement);
+  document.body.appendChild(VRButton.createButton(renderer));
+
+  raycaster = new THREE.Raycaster();
+
+  controller1 = renderer.xr.getController(0);
+  controller1.addEventListener('selectstart', onSelectStart);
+  controller1.addEventListener('selectend',   onSelectEnd);
+  scene.add(controller1);
+
+  controller2 = renderer.xr.getController(1);
+  controller2.addEventListener('selectstart', onSelectStart);
+  controller2.addEventListener('selectend',   onSelectEnd);
+  scene.add(controller2);
+
+  const controllerModelFactory = new XRControllerModelFactory();
+  controllerGrip1 = renderer.xr.getControllerGrip(0);
+  scene.add(controllerGrip1);
+  controllerGrip2 = renderer.xr.getControllerGrip(1);
+  scene.add(controllerGrip2);
+
+  renderer.xr.addEventListener('sessionstart', () => {
+    controllerGrip1.add(controllerModelFactory.createControllerModel(controllerGrip1));
+    controllerGrip2.add(controllerModelFactory.createControllerModel(controllerGrip2));
+  });
+
+  const laserGeo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, 0, -1)
+  ]);
+  const laser = new THREE.Line(laserGeo, new THREE.LineBasicMaterial({ color: 0xff6600 }));
+  laser.name = 'laser';
+  laser.scale.z = LASER_LENGTH;
+  controller1.add(laser.clone());
+  controller2.add(laser.clone());
+
+  loadArcadeModel();
+  window.addEventListener('resize', onWindowResize);
+}
+
+//Canvas
+function createTimerTexture() {
+  timerCanvas = document.createElement('canvas');
+  timerCanvas.width  = 512;
+  timerCanvas.height = 256;
+  timerCtx = timerCanvas.getContext('2d');
+  timerTexture = new THREE.CanvasTexture(timerCanvas);
+  return timerTexture;
+}
+
+function updateTimerTexture(secondsLeft) {
+  if (!timerCtx) return;
+
+  const mins  = Math.floor(secondsLeft / 60);
+  const secs  = secondsLeft % 60;
+  const label = `${mins}:${secs.toString().padStart(2, '0')}`;
+
+  // Background
+  timerCtx.fillStyle = '#000000';
+  timerCtx.fillRect(0, 0, timerCanvas.width, timerCanvas.height);
+
+  // Time digits
+  timerCtx.fillStyle = secondsLeft<=10 ? '#ff2222':'#ffffff';
+  timerCtx.font = '70px monospace';
+  timerCtx.textAlign = 'center';
+  timerCtx.textBaseline = 'middle';
+  timerCtx.fillText(label, timerCanvas.width/2, timerCanvas.height/2);
+
+  timerTexture.needsUpdate = true;
+}
+
+function loadArcadeModel() {
+  const loader = new GLTFLoader();
+  loader.load(
+    MODEL_PATH,
+    (gltf) => {
+      const model = gltf.scene;
+      model.scale.set(0.5, 0.5, 0.5);
+      scene.add(model);
+
+      model.traverse((child) => {
+        if (!child.isMesh) return;
+        const nameLower = child.name.toLowerCase();
+
+        // ── Divider ──
+        if (nameLower === DIVIDER.toLowerCase()) {
+          dividerMesh  = child;
+          dividerRestY = child.position.y; // remember starting position
+          console.log(`Divider found. Rest Y = ${dividerRestY.toFixed(3)}`);
+          return;
+        }
+
+        // ── Timer display ──
+        if (nameLower === TIMER.toLowerCase()) {
+          timerMesh = child;
+
+          const tex = createTimerTexture();
+          updateTimerTexture(GAME_DURATION); 
+
+          child.material = Array.isArray(child.material)
+            ? child.material.map(m => m.clone())
+            : child.material
+              ? child.material.clone()
+              : new THREE.MeshStandardMaterial();
+
+          const applyTex = (mat) => {
+            mat.map = tex;
+            mat.emissiveMap = tex;
+            mat.emissive = new THREE.Color(0xffffff);
+            mat.emissiveIntensity = 1;
+            mat.needsUpdate       = true;
+          };
+
+          if (Array.isArray(child.material)) {
+            child.material.forEach(applyTex);
+          } else {
+            applyTex(child.material);
+          }
+          return;
+        }
+
+        const btnName = BUTTON_NAMES.find(n => nameLower === n.toLowerCase());
+        if (!btnName) return;
+
+        if (child.material && !Array.isArray(child.material)) {
+          child.material = child.material.clone();
+          if (!child.material.emissive) child.material.emissive = new THREE.Color(0x000000);
+          child.material.emissiveIntensity = 1;
+        }
+
+        buttons.push({
+          mesh: child,
+          name: btnName,
+          originalLocalY: child.position.y,
+          isPressed: false,
+        });
+      });
+
+      if (buttons.length === 0)
+        console.warn('No buttons found! Check mesh names match:', BUTTON_NAMES);
+      if (!dividerMesh)
+        console.warn(`Divider mesh "${DIVIDER}" not found in model!`);
+      if (!timerMesh)
+        console.warn(`Timer mesh "${TIMER}" not found in model!`);
+    },
+    (xhr) => console.log(`Loading: ${Math.round(xhr.loaded / xhr.total * 100)}%`),
+    (err) => console.error('Model load error:', err)
+  );
+}
+
+// Game logic
+
+function onButtonPressed(btnName) {
+  if (gameRunning) return;
+
+  switch (btnName.toLowerCase()) {
+    case 'button_classic':
+      console.log('Classic mode!');
+      // TODO: configure classic mode settings
+      break;
+    case 'button_levels':
+      console.log('Level selected!');
+      // TODO: configure level-specific settings
+      break;
+  }
+
+  gameRunning = true;
+  dropDivider();  
+  startTimer();   
+}
+
+// ─── DIVIDER ──────────────────────────────────────────────────────────────────
+
+// Button pressed → divider drops below its resting position
+function dropDivider() {
+  if (!dividerMesh) {
+    console.warn('Cannot drop — "Separate" mesh not found.');
+    return;
+  }
+  dividerTargetY = dividerRestY - DIVIDER_DROP_AMOUNT;
+  console.log(`Divider dropping to Y = ${dividerTargetY.toFixed(3)}`);
+}
+
+// Timer expired → divider rises back to its original resting position
+function raiseDivider() {
+  if (!dividerMesh) {
+    console.warn('Cannot raise — "Separate" mesh not found.');
+    return;
+  }
+  dividerTargetY = dividerRestY;
+  console.log(`Divider rising back to Y = ${dividerTargetY.toFixed(3)}`);
+}
+
+// Runs every frame — smoothly steps toward dividerTargetY in either direction
+function animateDivider() {
+  if (!dividerMesh || dividerTargetY === null) return;
+
+  const diff = dividerTargetY - dividerMesh.position.y;
+
+  // Close enough — snap and stop
+  if (Math.abs(diff) <= DIVIDER_SPEED) {
+    dividerMesh.position.y = dividerTargetY;
+    dividerTargetY = null;
+
+    if (dividerMesh.position.y < dividerRestY) {
+      console.log('Divider fully dropped — game in progress.');
+    } else {
+      console.log('Divider fully raised — balls released!');
+      // TODO: trigger ball physics / spawning here
+    }
+    return;
+  }
+
+  // Math.sign gives +1 or -1, so this works for both up and down
+  dividerMesh.position.y += Math.sign(diff) * DIVIDER_SPEED;
+}
+
+//Timer
+function startTimer() {
+  timerSecondsLeft   = GAME_DURATION;
+  timerLastTimestamp = null;
+  timerRunning       = true;
+
+  disTimer.style.display = 'block';
+  updateTimerTexture(timerSecondsLeft);
+  updateHUD(timerSecondsLeft);
+}
+
+function tickTimer(now) {
+  if (!timerRunning) return;
+
+  if (timerLastTimestamp === null) {
+    timerLastTimestamp = now;
+    return;
+  }
+
+  const elapsed      = (now - timerLastTimestamp) / 1000;
+  timerLastTimestamp = now;
+
+  const prevSeconds = timerSecondsLeft;
+  timerSecondsLeft  = Math.max(0, timerSecondsLeft - elapsed);
+
+  // Only redraw texture when the displayed second changes (saves GPU uploads)
+  if (Math.floor(prevSeconds) !== Math.floor(timerSecondsLeft)) {
+    const displaySecs = Math.ceil(timerSecondsLeft);
+    updateTimerTexture(displaySecs);
+    updateHUD(displaySecs);
+  }
+
+  if (timerSecondsLeft <= 0) {
+    timerRunning = false;
+    onTimerExpired();
+  }
+}
+
+function updateHUD(secondsLeft) {
+  const mins = Math.floor(secondsLeft / 60);
+  const secs = secondsLeft % 60;
+  disTimer.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+  disTimer.style.color = secondsLeft <= 10 ? '#ff4444' : '#ffffff';
+}
+
+function onTimerExpired() {
+  console.log('Timer expired — raising divider!');
+  updateTimerTexture(0);
+  updateHUD(0);
+  raiseDivider();      // divider goes back UP
+  gameRunning = false; // allow a new game to be started after divider resets
+}
+
+// ─── CONTROLLER EVENTS ────────────────────────────────────────────────────────
+
+function onSelectStart(event) {
+  const controller = event.target;
+  raycaster.setFromXRController(controller);
+
+  const hits = raycaster.intersectObjects(buttons.map(b => b.mesh), false);
+  if (hits.length === 0) return;
+
+  const btn = buttons.find(b => b.mesh === hits[0].object);
+  if (!btn || btn.isPressed) return;
+
+  btn.isPressed = true;
+  btn.mesh.position.y = btn.originalLocalY - PRESS_DEPTH;
+  if (btn.mesh.material?.emissive) btn.mesh.material.emissive.set(0x0044ff);
+  onButtonPressed(btn.name);
+}
+
+function onSelectEnd() {
+  buttons.forEach(btn => {
+    if (!btn.isPressed) return;
+    btn.isPressed = false;
+    btn.mesh.position.y = btn.originalLocalY;
+    if (btn.mesh.material?.emissive) btn.mesh.material.emissive.set(0x000000);
+  });
+}
+
+// hover
+function updateHover(controller) {
+  if (buttons.some(b => b.isPressed)) return;
+
+  raycaster.setFromXRController(controller);
+  const laser = controller.getObjectByName('laser');
+  const hits  = raycaster.intersectObjects(buttons.map(b => b.mesh), false);
+
+  if (hits.length > 0) {
+    const btn = buttons.find(b => b.mesh === hits[0].object);
+    if (btn && !hovered.includes(btn.mesh)) {
+      if (btn.mesh.material?.emissive) btn.mesh.material.emissive.set(0xff2200);
+      hovered.push(btn.mesh);
+    }
+    if (laser) laser.scale.z = hits[0].distance;
+  } else {
+    if (laser) laser.scale.z = LASER_LENGTH;
+  }
+}
+
+function clearHover() {
+  while (hovered.length) {
+    const mesh = hovered.pop();
+    const btn  = buttons.find(b => b.mesh === mesh);
+    if (btn && !btn.isPressed && mesh.material?.emissive) {
+      mesh.material.emissive.set(0x000000);
+    }
+  }
+}
+
+// ─── WINDOW RESIZE ────────────────────────────────────────────────────────────
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// ─── ANIMATE LOOP ─────────────────────────────────────────────────────────────
+
+function animate(timestamp) {
+  clearHover();
+  updateHover(controller1);
+  updateHover(controller2);
+  tickTimer(timestamp);
+  animateDivider();
+  renderer.render(scene, camera);
+}
+
+</script>
+</body>
+</html>
