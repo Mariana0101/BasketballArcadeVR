@@ -130,11 +130,11 @@
   let holdinController  = null;
   let prevControllerPos = new THREE.Vector3();
 
+  const textureLoader = new THREE.TextureLoader();
+
   const elTimer = document.getElementById('timer-value');
   const elScore = document.getElementById('score-value');
-
   
-
   init();
 
   function init() {
@@ -541,10 +541,14 @@
       z: (Math.random() - 0.5) * 2-4 
     };
     const radius = 0.15;
+    const basketballTexture = textureLoader.load('basketballtexture.png');
+    const material = new THREE.MeshStandardMaterial({
+      map: basketballTexture,
+    });
 
     const sphereMesh = new THREE.Mesh(
       new THREE.SphereGeometry(radius, 32, 32),
-      new THREE.MeshStandardMaterial({ color: 0xf27c00 })
+      material
     );
     sphereMesh.position.set(pos.x, pos.y, pos.z);
     sphereMesh.castShadow = true;
