@@ -1,4 +1,4 @@
-<<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
   <title>Basketball Arcade</title>
@@ -55,7 +55,7 @@
   import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
   import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-  const MODEL_PATH = 'Arcade_machine.glb';
+  const MODEL_PATH   = 'machine+hoop1.glb';
 
   const BUTTON_NAMES = ['Button_Classic', 'Button_levels'];
 
@@ -67,7 +67,7 @@
   const PRESS_DEPTH = 0.01;
   const DIVIDER_DROP_AMOUNT = 1.5;
   const DIVIDER_SPEED = 0.008;
-  const GAME_DURATION = 20; // 2 minutes 
+  const GAME_DURATION = 30; // 2 minutes 
 
   let camera, scene, renderer, raycaster;
   let controller1, controller2;
@@ -88,7 +88,7 @@
   let dividerRestY   = null;  
   let dividerTargetY = null; 
 
-  let timerSecondsLeft = GAME_DURATION;
+  let timerSecondsLeft   = GAME_DURATION;
   let timerLastTimestamp = null;
   let timerRunning       = false;
 
@@ -136,7 +136,7 @@
     });
     physicsWorld.addContactMaterial(contactMat);
 
-    // Floor comment 
+    // Floor
     const floorGeo = new THREE.CircleGeometry(8, 64);
     const floorMat = new THREE.MeshStandardMaterial({
       color: 0x88ccff,
@@ -282,7 +282,21 @@ function updateTimerTexture(secondsLeft) {
         model.traverse((child) => {
           if (!child.isMesh) return;
           const nameLower = child.name.toLowerCase();
-  
+
+          model.traverse((child) => {
+          if (child.isMesh) {
+            console.log("Mesh name:", child.name);
+          }
+        });
+
+        //hoop stuff
+
+        if (child.name === "Cube001") {
+        hoopMesh = child;
+        window.hoopMesh = child;
+        console.log("Hoop found:", child.name);
+      }
+          
           // ── Divider ──
           if (nameLower === DIVIDER.toLowerCase()) {
             dividerMesh  = child;
@@ -348,6 +362,24 @@ function updateTimerTexture(secondsLeft) {
       (err) => console.error('Model load error:', err)
     );
   }
+//Hoop movement 
+  let hoopVerticalDir = 1;
+
+  function animateHoop() {
+    if (!hoopMesh || !isLevelMode) return;
+
+    // Horizontal
+    hoopMesh.position.x += hoopDirection * hoopSpeed;
+    if (hoopMesh.position.x > 0.5 || hoopMesh.position.x < -0.5) {
+      hoopDirection *= -1;
+    }
+
+    // Vertical
+    hoopMesh.position.y += hoopVerticalDir * hoopSpeed;
+    if (hoopMesh.position.y > 2.5 || hoopMesh.position.y < 2.0) {
+      hoopVerticalDir *= -1;
+    }
+  }
 
   //BAllsS
   function createBall() {
@@ -394,10 +426,14 @@ function updateTimerTexture(secondsLeft) {
       case 'button_classic':
         console.log('Classic mode!');
         // TODO: configure classic mode settings
+        isLevelMode = false;
+        hoopSpeed = 0; // no movement
         break;
       case 'button_levels':
         console.log('Level selected!');
         // TODO: configure level-specific settings
+        isLevelMode = true;
+        hoopSpeed = 0.008;
         break;
     }
   
@@ -449,7 +485,7 @@ function animateDivider() {
   
   //Timer
   function startTimer() {
-    timerSecondsLeft = GAME_DURATION;
+    timerSecondsLeft   = GAME_DURATION;
     timerLastTimestamp = null;
     timerRunning       = true;
   
@@ -639,9 +675,6 @@ function animateDivider() {
   function clampToRadius(point) {
     const TELEPORT_RADIUS = 2; // meters from (0,0,0)
     const origin = new THREE.Vector3(0, 0, 0);
-    if (point.z<-0.4){
-      point.z=-0.4
-    }
     const offset = point.clone().sub(origin);
 
     if (offset.length() > TELEPORT_RADIUS) {
@@ -686,6 +719,22 @@ function animateDivider() {
             }*/
     }
 
+  let currentLevel = 1;
+  let levelTimer = 0;
+  function updateLevels(delta) {
+  if (!isLevelMode || !gameRunning) return;
+
+  levelTimer += delta;
+
+  if (levelTimer > 10) { // every 10 seconds
+    currentLevel++;
+    levelTimer = 0;
+
+    console.log("Level up:", currentLevel);
+
+    hoopSpeed += 0.003; // increase difficulty
+  }
+}
   function animate() {
     renderLoop()
     if (heldObject && holdinController) {
@@ -699,6 +748,9 @@ function animateDivider() {
       heldObject.body.wakeUp();
     }
     clearHover();
+    const delta = clock.getDelta();
+    updateLevels(delta);
+    animateHoop();
     updateHover(controller1);
     updateHover(controller2);
     animateDivider();
