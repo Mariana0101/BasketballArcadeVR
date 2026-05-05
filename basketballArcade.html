@@ -122,6 +122,7 @@
   let score = 0;
 
   let hoopMesh = null;
+  let hoopColliders = [];
   let hoopDirection = 1;
   let hoopSpeed = 0.008;
   let isLevelMode = false;
@@ -240,7 +241,7 @@
     controller2.add(laserLine.clone());
 
     const debugGroup = new THREE.Group();
-    debugGroup.visible = true;
+    debugGroup.visible = false;
     scene.add(debugGroup);
     cannonDebugger = CannonDebugger(debugGroup, physicsWorld);
 
@@ -355,6 +356,33 @@
           window.hoopMesh = child;
           child.scale.set(1.5, 1.5, 1.5);
           hoopOrigin = child.position.clone();
+
+          const hoopWorldPos = new THREE.Vector3();
+          child.updateWorldMatrix(true, false);
+          child.getWorldPosition(hoopWorldPos);
+        
+          const numSegments = 8;
+          const hoopRadius = 0.5;   
+          const segWidth = 0.05; 
+          const segHeight = 0.03;
+        
+          hoopColliders = [];
+        
+          for (let i = 0; i < numSegments; i++) {
+            const angle = (i / numSegments) * Math.PI * 2;
+            const x = Math.cos(angle) * hoopRadius;
+            const z = Math.sin(angle) * hoopRadius;
+        
+            const seg = new CANNON.Body({ mass: 0, material: matFloor });
+            seg.addShape(new CANNON.Box(new CANNON.Vec3(segWidth, segHeight, segWidth)));
+            seg.position.set(
+              hoopWorldPos.x + x,
+              hoopWorldPos.y,
+              hoopWorldPos.z + z
+            );
+            physicsWorld.addBody(seg);
+            hoopColliders.push({ body: seg, offsetX: x, offsetZ: z });
+          }
           return;
         }
 
@@ -594,11 +622,23 @@
     if (hoopMesh.position.x > 0.5 || hoopMesh.position.x < -0.5) hoopDirection *= -1;
     hoopMesh.position.y += hoopVerticalDir * hoopSpeed;
     if (hoopMesh.position.y > 2.5 || hoopMesh.position.y < 2.0) hoopVerticalDir *= -1;
-
+  
     if (hoopSensor) {
       const worldPos = new THREE.Vector3();
       hoopMesh.getWorldPosition(worldPos);
       hoopSensor.position.set(worldPos.x, worldPos.y, worldPos.z);
+    }
+
+    if (hoopColliders.length > 0) {
+      const worldPos = new THREE.Vector3();
+      hoopMesh.getWorldPosition(worldPos);
+      hoopColliders.forEach(col => {
+        col.body.position.set(
+          worldPos.x + col.offsetX,
+          worldPos.y,
+          worldPos.z + col.offsetZ
+        );
+      });
     }
   }
 
