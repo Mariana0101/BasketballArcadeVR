@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Basketball Arcade</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { overflow: hidden; background-color: #1a1a2e; position: relative; }
+
+    /* Push the Three.js canvas behind everything */
+    body > canvas {
+      position: absolute;
+      top: 0; left: 0;
+      z-index: 0;
+    }
+
+    /* ── HUD ── */
+    #hud {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+      z-index: 9999;
+    }
+
+    .hud-panel {
+      display: flex;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+      background: rgba(0, 0, 0, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 8px;
+      padding: 5px 12px;
+    }
+
+    .hud-label {
+      font-family: 'Courier New', monospace;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.5);
+    }
+
+    .hud-value {
+      font-family: 'Courier New', monospace;
+      font-size: 22px;
+      font-weight: 700;
+      color: #ffffff;
+      line-height: 1;
+      min-width: 48px;
+      transition: color 0.3s;
+    }
+
+    #timer-value.urgent {
+      color: #ff4444;
+      animation: pulse 0.5s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulse {
+      from { opacity: 1; }
+      to   { opacity: 0.5; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- HUD overlay -->
+  <div id="hud">
+    <div class="hud-panel">
+      <span class="hud-label">Time</span>
+      <span class="hud-value" id="timer-value">2:00</span>
+    </div>
+    <div class="hud-panel">
+      <span class="hud-label">Score</span>
+      <span class="hud-value" id="score-value">0</span>
+    </div>
+  </div>
+
+<script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/",
+      "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js",
+      "cannon-es-debugger": "https://cdn.jsdelivr.net/npm/cannon-es-debugger@1.0.0/dist/cannon-es-debugger.js"
+    }
+  }
+</script>
+
+<script type="module">
+
+  import * as THREE from 'three';
+  import * as CANNON from 'cannon-es';
+  import CannonDebugger from 'cannon-es-debugger';
+  import { VRButton } from 'three/addons/webxr/VRButton.js';
+  import { XRControllerModelFactory } from 'three/addons/webxr/XRControllerModelFactory.js';
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+  const MODEL_PATH = 'Arcade_machine.glb';
+
+  const BUTTON_NAMES = ['Button_Classic', 'Button_levels'];
+
+  const DIVIDER = 'Separate';
+
+  const LASER_LENGTH = 5;
+  const PRESS_DEPTH = 0.01;
+  const DIVIDER_DROP_AMOUNT = 1.5;
+  const DIVIDER_SPEED = 0.008;
+  const GAME_DURATION = 120; // 2 minutes
+
+  let camera, scene, renderer, raycaster;
+  let controller1, controller2;
+  let controllerGrip1, controllerGrip2;
+  let floor, player, marker, objects, matBounce, matFloor, physicsWorld;
+  let group;
+
+  const clock = new THREE.Clock();
+
+  const buttons = [];
+  const hovered = [];
+
+  let dividerMesh  = null;
+  let gameRunning  = false;
+
+  let dividerRestY   = null;
+  let dividerTargetY = null;
+
+  let timerSecondsLeft  = GAME_DURATION;
+  let timerLastTimestamp = null;
+  let timerRunning       = false;
+
+  let score = 0;
+
+  // HUD elements
+  const elTimer = document.getElementById('timer-value');
+  const elScore = document.getElementById('score-value');
+
+  let heldObject = null;
+  let holdinController = null;
+  let prevControllerPos = new THREE.Vector3();
+
+  let hoopMesh = null;
+  window.hoopMesh = null;
+  let hoopDirection = 1;
+  let hoopSpeed = 0.008;
+  let isLevelMode = false;
+
+  init();
+
+  // ─────────────────────────────────────────
+  //  INIT
+  // ─────────────────────────────────────────
+  function init() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a2e);
+    scene.fog = new THREE.Fog(0x1a1a2e, 10, 30);
+
+    camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 50);
+
+    physicsWorld = new CANNON.World();
+    physicsWorld.gravity.set(0, -9.82, 0);
+
+    matBounce = new CANNON.Material('bouncy');
+    matFloor  = new CANNON.Material('floor');
+
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x444466, 2));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 3);
+    dirLight.position.set(2, 4, 2);
+    scene.add(dirLight);
+
+    const contactMat = new CANNON.ContactMaterial(matBounce, matFloor, {
+      friction: 0.3,
+      restitution: 0.7
+    });
+    physicsWorld.addContactMaterial(contactMat);
+
+    // Floor
+    const floorGeo = new THREE.CircleGeometry(8, 64);
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x88ccff,
+      roughness: 0,
+      metalness: 0,
+      transparent: true,
+      opacity: 0.8
+    });
+    floor = new THREE.Mesh(floorGeo, floorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    objects = [];
+
+    const floorBody = new CANNON.Body({
+      mass: 0,
+      shape: new CANNON.Plane(),
+      material: matFloor
+    });
+    floorBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+    physicsWorld.addBody(floorBody);
+
+    group = new THREE.Group();
+    scene.add(group);
+
+    const loader = new THREE.TextureLoader();
+    loader.load('background_VR.jpeg', (texture) => {
+      texture.mapping = THREE.EquirectangularReflectionMapping;
+      scene.background = texture;
+      scene.environment = texture;
+    });
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setAnimationLoop(animate);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+    document.body.appendChild(VRButton.createButton(renderer));
+
+    raycaster = new THREE.Raycaster();
+
+    controller1 = renderer.xr.getController(0);
+    controller1.addEventListener('selectstart', onSelectStart);
+    controller1.addEventListener('selectend',   onSelectEnd);
+    controller1.addEventListener('squeezestart', onSqueezeStart);
+
+    controller2 = renderer.xr.getController(1);
+    controller2.addEventListener('selectstart', onSelectStart);
+    controller2.addEventListener('selectend',   onSelectEnd);
+    controller2.addEventListener('squeezestart', onSqueezeStart);
+
+    const controllerModelFactory = new XRControllerModelFactory();
+    controllerGrip1 = renderer.xr.getControllerGrip(0);
+    controllerGrip2 = renderer.xr.getControllerGrip(1);
+
+    player = new THREE.Group();
+    player.add(camera);
+    player.add(controller1);
+    player.add(controller2);
+    player.add(controllerGrip1);
+    player.add(controllerGrip2);
+    scene.add(player);
+    player.position.set(0, 0.6, 0);
+
+    marker = new THREE.Mesh(
+      new THREE.RingGeometry(0.1, 0.15, 32),
+      new THREE.MeshBasicMaterial({ color: 0x00ffcc, side: THREE.DoubleSide })
+    );
+    marker.rotation.x = -Math.PI / 2;
+    marker.visible = false;
+    scene.add(marker);
+
+    renderer.xr.addEventListener('sessionstart', () => {
+      controllerGrip1.add(controllerModelFactory.createControllerModel(controllerGrip1));
+      controllerGrip2.add(controllerModelFactory.createControllerModel(controllerGrip2));
+    });
+
+    const laserGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, 0),
+      new THREE.Vector3(0, 0, -1)
+    ]);
+    const laser = new THREE.Line(laserGeo, new THREE.LineBasicMaterial({ color: 0xff6600 }));
+    laser.name = 'laser';
+    laser.scale.z = LASER_LENGTH;
+    controller1.add(laser.clone());
+    controller2.add(laser.clone());
+
+    loadArcadeModel();
+    createBall();
+    updateHUD(GAME_DURATION);
+
+    window.addEventListener('resize', onWindowResize);
+  }
+
+  // ─────────────────────────────────────────
+  //  HUD
+  // ─────────────────────────────────────────
+  function updateHUD(secondsLeft) {
+    const mins = Math.floor(secondsLeft / 60);
+    const secs = Math.floor(secondsLeft) % 60;
+    elTimer.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+
+    if (secondsLeft <= 10) {
+      elTimer.classList.add('urgent');
+    } else {
+      elTimer.classList.remove('urgent');
+    }
+  }
+
+  function addScore(points = 1) {
+    score += points;
+    elScore.textContent = score;
+  }
+
+  // ─────────────────────────────────────────
+  //  MODEL
+  // ─────────────────────────────────────────
+  function loadArcadeModel() {
+    const loader = new GLTFLoader();
+    loader.load(
+      MODEL_PATH,
+      (gltf) => {
+        const model = gltf.scene;
+        model.scale.set(0.75, 0.75, 0.75);
+        model.rotation.y = Math.PI / 2;
+        model.position.set(0, 0, -3);
+        scene.add(model);
+
+        // ── Arcade machine compound physics collider ──
+        // Get full bounding box of the model in world space
+        const arcadeBox = new THREE.Box3().setFromObject(model);
+        const arcadeSize = new THREE.Vector3();
+        arcadeBox.getSize(arcadeSize);
+        const arcadeMin = arcadeBox.min;
+        const arcadeMax = arcadeBox.max;
+
+        // Shared static body — one CANNON.Body with multiple shapes offset per section
+        const arcadeBody = new CANNON.Body({ mass: 0, material: matFloor });
+
+        // Shrink collider to 60% of bounding box so hoop area stays open
+        const SCALE = 0.6;
+        const W  = (arcadeSize.x / 2) * SCALE;   // half-width  (X)
+        const D  = (arcadeSize.z / 2) * SCALE;   // half-depth  (Z)
+        const cx = (arcadeMin.x + arcadeMax.x) / 2;
+        const cz = (arcadeMin.z + arcadeMax.z) / 2;
+        const baseY = arcadeMin.y;      // floor level of the machine
+
+        // ① Lower cabinet — bottom 45% of height
+        const cabinetH = arcadeSize.y * 0.45;
+        arcadeBody.addShape(
+          new CANNON.Box(new CANNON.Vec3(W, cabinetH / 2, D)),
+          new CANNON.Vec3(0, cabinetH / 2, 0)
+        );
+
+        // ② Upper screen head — top 35% of height
+        const screenH    = arcadeSize.y * 0.35;
+        const screenOffY = cabinetH + arcadeSize.y * 0.15 + screenH / 2;
+        arcadeBody.addShape(
+          new CANNON.Box(new CANNON.Vec3(W, screenH / 2, D * 0.75)),
+          new CANNON.Vec3(0, screenOffY, 0)
+        );
+
+        // ③ Neck / mid-section
+        const neckH    = arcadeSize.y * 0.15;
+        const neckOffY = cabinetH + neckH / 2;
+        arcadeBody.addShape(
+          new CANNON.Box(new CANNON.Vec3(W * 0.85, neckH / 2, D * 0.6)),
+          new CANNON.Vec3(0, neckOffY, 0)
+        );
+
+        // ④ Top cap
+        const capH    = arcadeSize.y * 0.04;
+        const capOffY = arcadeSize.y - capH / 2;
+        arcadeBody.addShape(
+          new CANNON.Box(new CANNON.Vec3(W, capH / 2, D * 0.75)),
+          new CANNON.Vec3(0, capOffY, 0)
+        );
+
+        // Place body so its origin sits at the bottom of the machine
+        arcadeBody.position.set(cx, baseY, cz);
+        physicsWorld.addBody(arcadeBody);
+        console.log('Compound arcade collider added — 4 shapes', { arcadeSize, cx, baseY, cz });
+
+        model.traverse((child) => {
+          if (!child.isMesh) return;
+          const nameLower = child.name.toLowerCase();
+
+          // Divider
+          if (nameLower === DIVIDER.toLowerCase()) {
+            dividerMesh  = child;
+            dividerRestY = child.position.y;
+            console.log(`Divider found. Rest Y = ${dividerRestY.toFixed(3)}`);
+            return;
+          }
+
+          // Buttons
+          const btnName = BUTTON_NAMES.find(n => nameLower === n.toLowerCase());
+          if (!btnName) return;
+
+          if (child.material && !Array.isArray(child.material)) {
+            child.material = child.material.clone();
+            if (!child.material.emissive) child.material.emissive = new THREE.Color(0x000000);
+            child.material.emissiveIntensity = 1;
+          }
+
+          buttons.push({
+            mesh: child,
+            name: btnName,
+            originalLocalY: child.position.y,
+            isPressed: false,
+          });
+        });
+
+        if (buttons.length === 0)
+          console.warn('No buttons found! Check mesh names match:', BUTTON_NAMES);
+        if (!dividerMesh)
+          console.warn(`Divider mesh "${DIVIDER}" not found in model!`);
+      },
+      (xhr) => console.log(`Loading: ${Math.round(xhr.loaded / xhr.total * 100)}%`),
+      (err) => console.error('Model load error:', err)
+    );
+  }
+
+  // ─────────────────────────────────────────
+  //  BALL
+  // ─────────────────────────────────────────
+  function createBall() {
+    const pos = { x: 2, y: 1.3, z: -1 };
+    const radius = 0.15;
+
+    const sphereMesh = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 32, 32),
+      new THREE.MeshStandardMaterial({ color: 0xf27c00 })
+    );
+    sphereMesh.position.set(pos.x, pos.y, pos.z);
+    sphereMesh.castShadow = true;
+    scene.add(sphereMesh);
+
+    const sphereBody = new CANNON.Body({
+      mass: 1,
+      shape: new CANNON.Sphere(0.3),
+      material: matBounce
+    });
+    sphereBody.position.copy(sphereMesh.position);
+    physicsWorld.addBody(sphereBody);
+
+    objects.push({ mesh: sphereMesh, body: sphereBody, type: 'sphere' });
+    group.add(sphereMesh);
+  }
+
+  // ─────────────────────────────────────────
+  //  GAME LOGIC
+  // ─────────────────────────────────────────
+  function onButtonPressed(btnName) {
+    if (gameRunning) return;
+
+    switch (btnName.toLowerCase()) {
+      case 'button_classic':
+        console.log('Classic mode!');
+        isLevelMode = false;
+        break;
+      case 'button_levels':
+        console.log('Level selected!');
+        isLevelMode = true;
+        break;
+    }
+
+    score = 0;
+    elScore.textContent = '0';
+    gameRunning = true;
+    dropDivider();
+    startTimer();
+  }
+
+  function dropDivider() {
+    if (!dividerMesh) { console.warn('Cannot drop — "Separate" mesh not found.'); return; }
+    dividerTargetY = dividerRestY - DIVIDER_DROP_AMOUNT;
+    console.log(`Divider dropping to Y = ${dividerTargetY.toFixed(3)}`);
+  }
+
+  function raiseDivider() {
+    if (!dividerMesh) { console.warn('Cannot raise — "Separate" mesh not found.'); return; }
+    dividerTargetY = dividerRestY;
+    console.log(`Divider rising back to Y = ${dividerTargetY.toFixed(3)}`);
+  }
+
+  function animateDivider() {
+    if (!dividerMesh || dividerTargetY === null) return;
+
+    const diff = dividerTargetY - dividerMesh.position.y;
+
+    if (Math.abs(diff) <= DIVIDER_SPEED) {
+      dividerMesh.position.y = dividerTargetY;
+      dividerTargetY = null;
+      return;
+    }
+
+    dividerMesh.position.y += Math.sign(diff) * DIVIDER_SPEED;
+  }
+
+  // ─────────────────────────────────────────
+  //  TIMER
+  // ─────────────────────────────────────────
+  function startTimer() {
+    timerSecondsLeft   = GAME_DURATION;
+    timerLastTimestamp = null;
+    timerRunning       = true;
+    updateHUD(timerSecondsLeft);
+  }
+
+  function tickTimer(now) {
+    if (!timerRunning) return;
+
+    if (timerLastTimestamp === null) {
+      timerLastTimestamp = now;
+      return;
+    }
+
+    const elapsed      = (now - timerLastTimestamp) / 1000;
+    timerLastTimestamp = now;
+
+    const prevSeconds  = timerSecondsLeft;
+    timerSecondsLeft   = Math.max(0, timerSecondsLeft - elapsed);
+
+    if (Math.floor(prevSeconds) !== Math.floor(timerSecondsLeft)) {
+      updateHUD(Math.ceil(timerSecondsLeft));
+    }
+
+    if (timerSecondsLeft <= 0) {
+      timerRunning = false;
+      onTimerExpired();
+    }
+  }
+
+  function onTimerExpired() {
+    console.log('Time up!');
+    updateHUD(0);
+    raiseDivider();
+    gameRunning = false;
+  }
+
+  // ─────────────────────────────────────────
+  //  CONTROLLER EVENTS
+  // ─────────────────────────────────────────
+  function onSelectStart(event) {
+    const controller = event.target;
+
+    raycaster.setFromXRController(controller);
+    const hits = raycaster.intersectObjects(buttons.map(b => b.mesh), false);
+
+    if (hits.length > 0) {
+      const btn = buttons.find(b => b.mesh === hits[0].object);
+      if (!btn || btn.isPressed) return;
+
+      btn.isPressed = true;
+      btn.mesh.position.y = btn.originalLocalY - PRESS_DEPTH;
+      if (btn.mesh.material?.emissive) btn.mesh.material.emissive.set(0x0044ff);
+      onButtonPressed(btn.name);
+      return;
+    }
+
+    tryGrab(controller);
+  }
+
+  function tryGrab(controller) {
+    raycaster.setFromXRController(controller);
+
+    const hits = raycaster.intersectObjects(objects.map(o => o.mesh), false);
+    if (hits.length === 0) return;
+
+    const obj = objects.find(o => o.mesh === hits[0].object);
+    if (!obj) return;
+
+    heldObject       = obj;
+    holdinController = controller;
+
+    obj.body.type = CANNON.Body.KINEMATIC;
+    obj.body.velocity.set(0, 0, 0);
+    obj.body.angularVelocity.set(0, 0, 0);
+
+    prevControllerPos.copy(controller.getWorldPosition(new THREE.Vector3()));
+  }
+
+  function onSelectEnd(event) {
+    const controller = event.target;
+
+    if (heldObject && holdinController) {
+      const direction = new THREE.Vector3(0, 0, -1);
+      direction.applyQuaternion(holdinController.quaternion);
+      direction.y += 0.5;
+      direction.normalize();
+
+      const throwStrength = 8;
+      heldObject.body.type = CANNON.Body.DYNAMIC;
+      heldObject.body.velocity.set(
+        direction.x * throwStrength,
+        direction.y * throwStrength,
+        direction.z * throwStrength
+      );
+
+      heldObject       = null;
+      holdinController = null;
+    }
+
+    buttons.forEach(btn => {
+      if (!btn.isPressed) return;
+      btn.isPressed = false;
+      btn.mesh.position.y = btn.originalLocalY;
+      if (btn.mesh.material?.emissive) btn.mesh.material.emissive.set(0x000000);
+    });
+  }
+
+  function onSqueezeStart(event) {
+    const controller = event.target;
+    const point = getTeleportPoint(controller);
+    if (!point) return;
+    const clamped = clampToRadius(point);
+    player.position.set(clamped.x, 0.6, clamped.z);
+  }
+
+  // ─────────────────────────────────────────
+  //  HOVER / TELEPORT
+  // ─────────────────────────────────────────
+  function updateHover(controller) {
+    if (buttons.some(b => b.isPressed)) return;
+
+    raycaster.setFromXRController(controller);
+    const laser = controller.getObjectByName('laser');
+    const hits  = raycaster.intersectObjects(buttons.map(b => b.mesh), false);
+
+    if (hits.length > 0) {
+      const btn = buttons.find(b => b.mesh === hits[0].object);
+      if (btn && !hovered.includes(btn.mesh)) {
+        if (btn.mesh.material?.emissive) btn.mesh.material.emissive.set(0xff2200);
+        hovered.push(btn.mesh);
+      }
+      if (laser) laser.scale.z = hits[0].distance;
+    } else {
+      if (laser) laser.scale.z = LASER_LENGTH;
+    }
+  }
+
+  function clearHover() {
+    while (hovered.length) {
+      const mesh = hovered.pop();
+      const btn  = buttons.find(b => b.mesh === mesh);
+      if (btn && !btn.isPressed && mesh.material?.emissive) {
+        mesh.material.emissive.set(0x000000);
+      }
+    }
+  }
+
+  function getTeleportPoint(controller) {
+    raycaster.setFromXRController(controller);
+    const hits = raycaster.intersectObject(floor);
+    return hits.length > 0 ? hits[0].point : null;
+  }
+
+  function clampToRadius(point) {
+    const TELEPORT_RADIUS = 2;
+    const origin = new THREE.Vector3(0, 0, 0);
+    if (point.z < -0.4) point.z = -0.4;
+    const offset = point.clone().sub(origin);
+    if (offset.length() > TELEPORT_RADIUS) offset.normalize().multiplyScalar(TELEPORT_RADIUS);
+    return origin.clone().add(offset);
+  }
+
+  function updateTeleportPreview(controller) {
+    const point = getTeleportPoint(controller);
+    if (point) {
+      marker.position.copy(clampToRadius(point));
+      marker.visible = true;
+    } else {
+      marker.visible = false;
+    }
+  }
+
+  function onWindowResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  // ─────────────────────────────────────────
+  //  LOOP
+  // ─────────────────────────────────────────
+  function renderLoop() {
+    const dt = clock.getDelta();
+    physicsWorld.step(1 / 60, dt, 3);
+
+    objects.forEach(obj => {
+      if (heldObject === obj) return;
+      obj.mesh.position.copy(obj.body.position);
+      obj.mesh.quaternion.copy(obj.body.quaternion);
+    });
+  }
+
+  function animate(now) {
+    renderLoop();
+
+    if (heldObject && holdinController) {
+      const worldPos = new THREE.Vector3();
+      holdinController.getWorldPosition(worldPos);
+      heldObject.mesh.position.copy(worldPos);
+      heldObject.body.position.set(worldPos.x, worldPos.y, worldPos.z);
+      heldObject.body.wakeUp();
+    }
+
+    clearHover();
+    updateHover(controller1);
+    updateHover(controller2);
+    animateDivider();
+    updateTeleportPreview(controller1);
+    updateTeleportPreview(controller2);
+    tickTimer(now);
+
+    renderer.render(scene, camera);
+  }
+
+</script>
+</body>
+</html>
