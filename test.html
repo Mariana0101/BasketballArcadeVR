@@ -311,66 +311,12 @@
         model.position.set(0, 0, -3);
         scene.add(model);
 
-        // ── Arcade machine compound physics collider ──
-        // Get full bounding box of the model in world space
-        const arcadeBox = new THREE.Box3().setFromObject(model);
-        const arcadeSize = new THREE.Vector3();
-        arcadeBox.getSize(arcadeSize);
-        const arcadeMin = arcadeBox.min;
-        const arcadeMax = arcadeBox.max;
-
-        // Shared static body — one CANNON.Body with multiple shapes offset per section
-        const arcadeBody = new CANNON.Body({ mass: 0, material: matFloor });
-
-        // Shrink collider to 60% of bounding box so hoop area stays open
-        const SCALE = 0.6;
-        const W  = (arcadeSize.x / 2) * SCALE;   // half-width  (X)
-        const D  = (arcadeSize.z / 2) * SCALE;   // half-depth  (Z)
-        const cx = (arcadeMin.x + arcadeMax.x) / 2;
-        const cz = (arcadeMin.z + arcadeMax.z) / 2;
-        const baseY = arcadeMin.y;      // floor level of the machine
-
-        // ① Lower cabinet — bottom 45% of height
-        const cabinetH = arcadeSize.y * 0.45;
-        arcadeBody.addShape(
-          new CANNON.Box(new CANNON.Vec3(W, cabinetH / 2, D)),
-          new CANNON.Vec3(0, cabinetH / 2, 0)
-        );
-
-        // ② Upper screen head — top 35% of height
-        const screenH    = arcadeSize.y * 0.35;
-        const screenOffY = cabinetH + arcadeSize.y * 0.15 + screenH / 2;
-        arcadeBody.addShape(
-          new CANNON.Box(new CANNON.Vec3(W, screenH / 2, D * 0.75)),
-          new CANNON.Vec3(0, screenOffY, 0)
-        );
-
-        // ③ Neck / mid-section
-        const neckH    = arcadeSize.y * 0.15;
-        const neckOffY = cabinetH + neckH / 2;
-        arcadeBody.addShape(
-          new CANNON.Box(new CANNON.Vec3(W * 0.85, neckH / 2, D * 0.6)),
-          new CANNON.Vec3(0, neckOffY, 0)
-        );
-
-        // ④ Top cap
-        const capH    = arcadeSize.y * 0.04;
-        const capOffY = arcadeSize.y - capH / 2;
-        arcadeBody.addShape(
-          new CANNON.Box(new CANNON.Vec3(W, capH / 2, D * 0.75)),
-          new CANNON.Vec3(0, capOffY, 0)
-        );
-
-        // Place body so its origin sits at the bottom of the machine
-        arcadeBody.position.set(cx, baseY, cz);
-        physicsWorld.addBody(arcadeBody);
-        console.log('Compound arcade collider added — 4 shapes', { arcadeSize, cx, baseY, cz });
-
+        // ── Single traverse: per-mesh colliders + buttons + divider ──
         model.traverse((child) => {
           if (!child.isMesh) return;
           const nameLower = child.name.toLowerCase();
 
-          // Divider
+          // ── Divider (animated — no static collider) ──
           if (nameLower === DIVIDER.toLowerCase()) {
             dividerMesh  = child;
             dividerRestY = child.position.y;
@@ -378,23 +324,49 @@
             return;
           }
 
-          // Buttons
+          // ── Buttons (interactive — no physics collider needed) ──
           const btnName = BUTTON_NAMES.find(n => nameLower === n.toLowerCase());
-          if (!btnName) return;
-
-          if (child.material && !Array.isArray(child.material)) {
-            child.material = child.material.clone();
-            if (!child.material.emissive) child.material.emissive = new THREE.Color(0x000000);
-            child.material.emissiveIntensity = 1;
+          if (btnName) {
+            if (child.material && !Array.isArray(child.material)) {
+              child.material = child.material.clone();
+              if (!child.material.emissive) child.material.emissive = new THREE.Color(0x000000);
+              child.material.emissiveIntensity = 1;
+            }
+            buttons.push({
+              mesh: child,
+              name: btnName,
+              originalLocalY: child.position.y,
+              isPressed: false,
+            });
+            return;
           }
 
-          buttons.push({
-            mesh: child,
-            name: btnName,
-            originalLocalY: child.position.y,
-            isPressed: false,
-          });
+          child.updateWorldMatrix(true, false);
+
+          // ── ARCADE cabinet → single box around its bounding box ──
+          if (nameLower === 'arcade') {
+            const box = new THREE.Box3().setFromObject(child);
+            const size   = new THREE.Vector3();
+            const center = new THREE.Vector3();
+            box.getSize(size);
+            box.getCenter(center);
+
+            const arcadeBody = new CANNON.Body({ mass: 0, material: matFloor });
+            arcadeBody.addShape(
+              new CANNON.Box(new CANNON.Vec3(size.x / 2, size.y / 2, size.z / 2))
+            );
+            arcadeBody.position.set(center.x, center.y, center.z);
+            physicsWorld.addBody(arcadeBody);
+            console.log('Arcade cabinet box collider added', size, center);
+            return;
+          }
+
+          // ── CAGE → no collider, ball passes through freely ──
+          if (nameLower === 'cage') return;
+
+          // ── Everything else → skip (no collider needed) ──
         });
+        console.log('Arcade colliders ready');
 
         if (buttons.length === 0)
           console.warn('No buttons found! Check mesh names match:', BUTTON_NAMES);
