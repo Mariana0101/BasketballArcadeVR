@@ -116,6 +116,9 @@
   let timerLastTimestamp = null;
   let timerRunning = false;
 
+  let textLevelsMesh = null;
+  let textClassicMesh = null;
+
   let score = 0;
 
   let hoopMesh = null;
@@ -125,6 +128,7 @@
   let hoopVerticalDir = 1;
   let currentLevel = 1;
   let levelTimer = 0;
+  let hoopOrigin = null;
 
   let hoopSensor = null;
   const scoredBalls = new Set(); 
@@ -279,6 +283,22 @@
         if (!child.isMesh) return;
         const nl = child.name.toLowerCase();
 
+        if(child.name === "Text_Levels"){
+          textLevelsMesh = child;
+          child.material = child.material.clone();
+          child.material.emissive = new THREE.Color(0x000000);
+          child.material.emissiveIntensity = 3;
+          return;
+        }
+
+        if(child.name === "Text_Classic"){
+          textClassicMesh = child;
+          child.material = child.material.clone();
+          child.material.emissive = new THREE.Color(0x000000);
+          child.material.emissiveIntensity = 3;
+          return;
+        }
+
         if (nl === DIVIDER.toLowerCase()) {
           dividerMesh  = child;
           dividerRestY = child.position.y;
@@ -334,6 +354,7 @@
           hoopMesh = child;
           window.hoopMesh = child;
           child.scale.set(1.5, 1.5, 1.5);
+          hoopOrigin = child.position.clone();
           return;
         }
 
@@ -479,10 +500,20 @@
   // Game Logic
   function onButtonPressed(btnName) {
     if (gameRunning) return;
+
+    if (textLevelsMesh) textLevelsMesh.material.emissive.set(0x000000);
+    if (textClassicMesh) textClassicMesh.material.emissive.set(0x000000);
+
     if (btnName.toLowerCase() === 'button_classic') {
-      isLevelMode = false; hoopSpeed = 0;
+      isLevelMode = false; 
+      hoopSpeed = 0;
+      if(textClassicMesh){
+        textClassicMesh.material.emissive.set(0xffea00);
+      }
     } else {
-      isLevelMode = true; hoopSpeed = 0.008;
+      isLevelMode = true; 
+      hoopSpeed = 0.008;
+      if (textLevelsMesh) textLevelsMesh.material.emissive.set(0xffea00);
     }
     // Reset score 
     score = 0;
@@ -544,6 +575,16 @@
     updateHUD(0);
     raiseDivider();
     gameRunning = false;
+    hoopSpeed = 0;
+
+    if (hoopMesh && hoopOrigin) {
+      hoopMesh.position.copy(hoopOrigin);
+      hoopDirection = 1;
+      hoopVerticalDir = 1;
+    }
+
+    if (textLevelsMesh) textLevelsMesh.material.emissive.set(0x000000);
+    if (textClassicMesh) textClassicMesh.material.emissive.set(0x000000);
   }
 
   // Hoop 
