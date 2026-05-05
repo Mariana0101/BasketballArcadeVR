@@ -676,10 +676,7 @@ function animateDivider() {
     const TELEPORT_RADIUS = 2; // meters from (0,0,0)
     const origin = new THREE.Vector3(0, 0, 0);
     const offset = point.clone().sub(origin);
-    if(offset.z<-.1){
-      offset.z=-.1;
-    }
-
+    
     if (offset.length() > TELEPORT_RADIUS) {
       offset.normalize().multiplyScalar(TELEPORT_RADIUS);
     }
