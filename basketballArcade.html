@@ -142,6 +142,7 @@
 
   const elTimer = document.getElementById('timer-value');
   const elScore = document.getElementById('score-value');
+  const basketballTexture = textureLoader.load('basketballtexture.png');
 
   init();
 
@@ -246,12 +247,6 @@
     cannonDebugger = CannonDebugger(debugGroup, physicsWorld);
 
     loadArcadeModel();
-    createBall();
-    createBall();
-    createBall();
-    createBall();
-    createBall();
-    createBall();
     updateHUD(GAME_DURATION);
     window.addEventListener('resize', onWindowResize);
   }
@@ -485,19 +480,19 @@
       z: (Math.random() - 0.5) * 2 - 4
     };
     const radius = 0.15;
-    const basketballTexture = textureLoader.load('basketballtexture.png');
+    
     const material = new THREE.MeshStandardMaterial({ map: basketballTexture });
 
     const sphereMesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 32, 32), material);
     sphereMesh.position.set(pos.x, pos.y, pos.z);
     sphereMesh.castShadow = true;
-    scene.add(sphereMesh);
+    
 
     const sphereBody = new CANNON.Body({ mass: 1, shape: new CANNON.Sphere(radius), material: matBounce });
     sphereBody.position.copy(sphereMesh.position);
     physicsWorld.addBody(sphereBody);
 
-    objects.push({ mesh: sphereMesh, body: sphereBody, type: 'sphere' });
+    objects.push({ mesh: sphereMesh, body: sphereBody, type: 'sphere', material: material });
     group.add(sphereMesh);
   }
 
@@ -547,6 +542,12 @@
     score = 0;
     elScore.textContent = '0';
     gameRunning = true;
+    createBall();
+    createBall();
+    createBall();
+    createBall();
+    createBall();
+    createBall();
     dropDivider();
     startTimer();
   }
@@ -587,6 +588,26 @@
     updateHUD(timerSecondsLeft);
   }
 
+  function clearScene() {
+    objects.forEach(obj => {
+
+      // remove from scene
+      group.remove(obj.mesh);
+
+      // dispose geometry
+      if (obj.mesh.geometry) {
+        obj.mesh.geometry.dispose();
+      }
+
+      // dispose material(s)
+      
+      // remove physics
+      physicsWorld.removeBody(obj.body);
+    });
+
+    objects.length = 0;
+  }
+
   function tickTimer(now) {
     if (!timerRunning) return;
     if (timerLastTimestamp === null) { timerLastTimestamp = now; return; }
@@ -600,6 +621,7 @@
 
   function onTimerExpired() {
     timerRunning = false;
+    clearScene();
     updateHUD(0);
     raiseDivider();
     gameRunning = false;
@@ -736,8 +758,8 @@
   }
 
   function clampToRadius(point) {
-    const R = 2, origin = new THREE.Vector3(0, 0, 0);
-    if (point.z < -0.4) point.z = -0.4;
+    const R = 10, origin = new THREE.Vector3(0, 0, 0);
+    //if (point.z < -0.4) point.z = -0.4;
     const off = point.clone().sub(origin);
     if (off.length() > R) off.normalize().multiplyScalar(R);
     return origin.clone().add(off);
