@@ -132,7 +132,16 @@
   let hoopOrigin = null;
 
   let hoopSensor = null;
-  const scoredBalls = new Set(); 
+  const scoredBalls = new Set();
+
+  // Rim rise/drop at 60s
+  const HOOP_RISE_AMOUNT = 0.4;   // world-space units the rim travels upward
+  const HOOP_RISE_SPEED  = 0.008; // world-space units per frame
+  let hoopBaseY = null;           // Y at game-start (set when game begins)
+  let hoopRiseState = 'idle';     // 'idle' | 'rising' | 'holding' | 'lowering'
+  let hoopRiseHoldTimer = 0;      // seconds spent at peak
+  const HOOP_RISE_HOLD_TIME = 1.5;// seconds to stay at peak before coming back down
+  let halfTimeFired = false;      // ensures it only fires once per game
 
   let heldObject = null;
   let holdinController  = null;
@@ -273,7 +282,10 @@
       model.position.set(0, 0, -3);
       scene.add(model);
 
-      model.traverse(c => { if (c.isMesh) console.log('Mesh found:', c.name); });
+      model.traverse(c => { 
+        if (c.isMesh) console.log('Mesh found:', c.name, '| parent:', c.parent?.name);
+        else console.log('Object found:', c.name, '(type:', c.type, ')');
+      });
 
       model.traverse((child) => {
         if (!child.isMesh) return;
@@ -345,12 +357,15 @@
           return;
         }
 
-        // Hoop
+        // Hoop - grab the parent Object3D so rim + net + bracket all move together
         if (child.name === 'Cube001') {
-          hoopMesh = child;
-          window.hoopMesh = child;
+          const hoopParent = child.parent && child.parent.type !== 'Scene' ? child.parent : child;
+          hoopMesh = hoopParent;
+          window.hoopMesh = hoopParent;
+          console.log('[Hoop] Moving node:', hoopParent.name, '| type:', hoopParent.type);
+
           child.scale.set(1.5, 1.5, 1.5);
-          hoopOrigin = child.position.clone();
+          hoopOrigin = hoopParent.position.clone();
 
           const hoopWorldPos = new THREE.Vector3();
           child.updateWorldMatrix(true, false);
@@ -585,6 +600,10 @@
     timerRunning = true;
     currentLevel = 1;
     levelTimer = 0;
+    halfTimeFired = false;
+    hoopRiseState = 'idle';
+    // Capture the hoop's current Y as the baseline for this game
+    if (hoopMesh) hoopBaseY = hoopMesh.position.y;
     updateHUD(timerSecondsLeft);
   }
 
@@ -617,6 +636,15 @@
     timerSecondsLeft = Math.max(0, timerSecondsLeft - elapsed);
     if (Math.floor(prev) !== Math.floor(timerSecondsLeft)) updateHUD(Math.ceil(timerSecondsLeft));
     if (timerSecondsLeft <= 0) { timerRunning = false; onTimerExpired(); }
+
+    // Trigger bounce once at 60s
+    if (!halfTimeFired && timerSecondsLeft <= 60) {
+      halfTimeFired = true;
+      if (hoopMesh) {
+        hoopBaseY = hoopMesh.position.y;
+        hoopRiseState = 'rising';
+      }
+    }
   }
 
   function onTimerExpired() {
@@ -626,9 +654,11 @@
     raiseDivider();
     gameRunning = false;
     hoopSpeed = 0;
+    hoopRiseState = 'idle';
 
     if (hoopMesh && hoopOrigin) {
       hoopMesh.position.copy(hoopOrigin);
+      hoopBaseY = hoopOrigin.y;
       hoopDirection = 1;
       hoopVerticalDir = 1;
     }
@@ -777,6 +807,51 @@
     renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
+  // Rim rise/lower animation triggered at the 60s 
+  function animateHoopRise(delta) {
+    if (!hoopMesh || hoopRiseState === 'idle' || hoopBaseY === null) return;
+
+    const parent = hoopMesh.parent;
+    const parentWorldScale = new THREE.Vector3();
+    if (parent) {
+      parent.getWorldScale(parentWorldScale);
+    } else {
+      parentWorldScale.set(1, 1, 1);
+    }
+
+    const localSpeed = HOOP_RISE_SPEED / (parentWorldScale.y || 1);
+    const localRise  = HOOP_RISE_AMOUNT / (parentWorldScale.y || 1);
+    const peak = hoopBaseY + localRise;
+
+    if (hoopRiseState === 'rising') {
+      hoopMesh.position.y += localSpeed;
+      if (hoopMesh.position.y >= peak) {
+        hoopMesh.position.y = peak;
+        hoopRiseState = 'lowering';
+      }
+    } else if (hoopRiseState === 'lowering') {
+      hoopMesh.position.y -= localSpeed;
+      if (hoopMesh.position.y <= hoopBaseY) {
+        hoopMesh.position.y = hoopBaseY;
+        hoopRiseState = 'rising';
+      }
+    }
+
+    // Keep the physics sensor and colliders in sync with the mesh
+    if (hoopSensor) {
+      const wp = new THREE.Vector3();
+      hoopMesh.getWorldPosition(wp);
+      hoopSensor.position.set(wp.x, wp.y, wp.z);
+    }
+    if (hoopColliders.length > 0) {
+      const wp = new THREE.Vector3();
+      hoopMesh.getWorldPosition(wp);
+      hoopColliders.forEach(col => {
+        col.body.position.set(wp.x + col.offsetX, wp.y, wp.z + col.offsetZ);
+      });
+    }
+  }
+
   function animate(now) {
     const delta = clock.getDelta();
     cannonDebugger.update();
@@ -801,6 +876,7 @@
     updateHover(controller2);
     animateDivider();
     animateHoop();
+    animateHoopRise(delta);
     updateLevels(delta);
     updateTeleportPreview(controller1);
     updateTeleportPreview(controller2);
